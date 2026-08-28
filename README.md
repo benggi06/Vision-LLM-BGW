@@ -34,7 +34,7 @@ PIPELINE = (
 
 # ==================== 2. TTS 음성 출력 함수 ====================
 def speak_via_piper_venv(text: str):
-    """Piper TTS로 음성 합성 후 aplay로 출력 (오류 시 기본 장치로 자동 폴백)"""
+    """Piper TTS로 음성 합성 후 aplay로 출력 (장치 오류 시 기본 장치로 자동 폴백)"""
     try:
         subprocess.run(
             [
@@ -75,14 +75,14 @@ def notify(console_msg: str, speech_msg: str = None):
 # ==================== 3. 종이 Bounding Box 검출 함수 ====================
 def find_paper_bounding_box(frame):
     """
-    영상 처리 기반으로 화면 내 가장 큰 종이 객체의 Bounding Box(x1, y1, x2, y2)를 계산
+    영상 처리 기반으로 화면 내 가장 유력한 종이 객체의 Bounding Box(x1, y1, x2, y2)를 계산
     """
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
-    # Otsu 이진화 및 Canny 에지 검출 결합
-    edges = cv2.Canny(blurred, 40, 150)
+    # 에지 검출 및 모폴로지 클로징 연산
+    edges = cv2.Canny(blurred, 30, 130)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 
@@ -90,19 +90,19 @@ def find_paper_bounding_box(frame):
 
     valid_box = None
     if len(contours) > 0:
-        # 화면의 일정 크기 이상인 가장 큰 컨투어 선택
+        # 화면의 일정 크기 이상인 가장 큰 컨투어 탐색
         largest_cnt = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest_cnt)
-        if area > (h * w * 0.05):  # 화면 5% 이상 면적
+        if area > (h * w * 0.04):
             x, y, bw, bh = cv2.boundingRect(largest_cnt)
-            # 마진 추가
-            x1 = max(0, x - 10)
-            y1 = max(0, y - 10)
-            x2 = min(w, x + bw + 10)
-            y2 = min(h, y + bh + 10)
+            # 여유 마진 추가
+            x1 = max(0, x - 15)
+            y1 = max(0, y - 15)
+            x2 = min(w, x + bw + 15)
+            y2 = min(h, y + bh + 15)
             valid_box = (x1, y1, x2, y2)
 
-    # 종이 영역이 명확히 안 잡히면 화면 중앙 기본 영역 지정
+    # 명확한 객체가 잡히지 않을 경우 기본 중심 영역 설정
     if valid_box is None:
         margin_x, margin_y = int(w * 0.15), int(h * 0.12)
         valid_box = (margin_x, margin_y, w - margin_x, h - margin_y)
@@ -135,18 +135,17 @@ cv2.resizeWindow("Paper Quality Inspector", 960, 540)
 # 시작 안내
 notify(
     "\n========================================\n"
-    "🔔 [시스템 시작] 종이 외관 검사 시스템을 시작합니다.\n"
+    "🔔 [시스템 시작] 종이 상태 검사 시스템을 시작합니다.\n"
     "========================================",
-    "종이 외관 검사 시스템을 시작합니다."
+    "종이 상태 검사 시스템을 시작합니다."
 )
 
 notify(
-    "👉 [안내] 화면 박스에 종이를 맞추고 [SPACE]를 누르세요. (종료는 Q)",
+    "👉 [안내] 화면 박스에 종이를 맞추고 [SPACE] 또는 [ENTER]를 누르세요. (종료는 Q)",
     "화면을 보며 종이를 맞추고 스페이스바를 눌러주세요."
 )
 
-# 상태 저장 변수
-current_status = "READY"
+# 상태 저장 변수 (화면 표시는 영문 전용)
 status_label = "READY (Press SPACE to Inspect)"
 box_color = (255, 255, 0)  # 초기 대기: 하늘색
 
@@ -159,22 +158,21 @@ try:
 
         display_frame = frame.copy()
         
-        # 1) 실시간 종이 위치 Bounding Box 계산
+        # 1) 실시간 Bounding Box 계산
         x1, y1, x2, y2 = find_paper_bounding_box(frame)
 
-        # 2) 화면 상에 Object Detection 형태의 BBox 및 라벨 표시
+        # 2) BBox 및 라벨 표시 (영문 전용)
         cv2.rectangle(display_frame, (x1, y1), (x2, y2), box_color, 3)
 
-        # 라벨 배경 및 텍스트 표시
         label_text = f"[{status_label}]"
-        (txt_w, txt_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-        cv2.rectangle(display_frame, (x1, max(0, y1 - txt_h - 12)), (x1 + txt_w + 10, y1), box_color, -1)
-        cv2.putText(display_frame, label_text, (x1 + 5, y1 - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
+        (txt_w, txt_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+        cv2.rectangle(display_frame, (x1, max(0, y1 - txt_h - 10)), (x1 + txt_w + 10, y1), box_color, -1)
+        cv2.putText(display_frame, label_text, (x1 + 5, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
 
-        # 상단 안내 바
-        cv2.putText(display_frame, "Key: [SPACE/ENTER] Inspect | [Q] Quit", (20, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        # 상단 조작 가이드 (영문)
+        cv2.putText(display_frame, "Key: [SPACE / ENTER] Inspect  |  [Q] Quit", (20, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
 
         cv2.imshow("Paper Quality Inspector", display_frame)
 
@@ -188,9 +186,9 @@ try:
             )
             break
 
-        # 검사 트리거 (SPACE: 32 / ENTER: 13)
+        # 검사 실행 (SPACE: 32 / ENTER: 13)
         if key in [32, 13]:
-            # 화면에 분석 중 알림 갱신
+            # 화면 상태 업데이트
             status_label = "ANALYZING..."
             box_color = (0, 165, 255)  # 주황색
             cv2.rectangle(display_frame, (x1, y1), (x2, y2), box_color, 3)
@@ -199,7 +197,7 @@ try:
 
             notify("\n🔍 [검사 진행] 종이 형태 및 찢어짐을 분석 중입니다...", "종이 상태를 분석 중입니다.")
 
-            # BBox 영역을 크롭하여 판별 정확도 상승
+            # BBox 영역 크롭
             paper_crop = frame[y1:y2, x1:x2]
             if paper_crop.size == 0:
                 paper_crop = frame
@@ -209,23 +207,19 @@ try:
             image_base64 = base64.b64encode(buffer).decode('utf-8')
             image_data = "data:image/jpeg;base64," + image_base64
 
-            # Gemma 4 VLM 판단 (직사각형 여부 + 찢어짐/구멍 훼손 정밀 검증)
+            # Gemma 4 VLM 정밀 판단 (비종이 객체 차단 + 직사각형 및 찢김 검증)
             response = llm.create_chat_completion(
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Instruction:\n"
-                            "Inspect the paper in the image carefully.\n"
-                            "Determine if the paper is a clean, fully intact rectangular shape or defective.\n\n"
-                            "Defect Criteria (불량):\n"
-                            "- The paper is torn, ripped, or has cut marks.\n"
-                            "- The edges are jagged, irregular, or missing corners.\n"
-                            "- There are visible cracks, gaps, holes, or non-rectangular shapes.\n\n"
-                            "Pass Criteria (정상):\n"
-                            "- The paper is a complete, clean, smooth rectangle without any tears or missing parts.\n\n"
+                            "You are an expert industrial quality control inspector for paper sheets.\n\n"
+                            "Strict Inspection Rules:\n"
+                            "1. Object Verification: Check if the main object is a genuine sheet of paper. If it is NOT paper (e.g. human hand, face, desk surface, phone, mug, keyboard, pen, background only, or other items), you MUST output: 불량\n"
+                            "2. Defect Detection: If it is paper, check for any tears, rips, jagged edges, cracks, missing corners, holes, or non-rectangular shapes. If any defect is found, you MUST output: 불량\n"
+                            "3. Pass Criteria: ONLY if it is a real, completely intact, clean, flat rectangular sheet of paper with no tears, output: 정상\n\n"
                             "Constraint:\n"
-                            "Respond with ONLY ONE word: '정상' or '불량'."
+                            "Output EXACTLY ONE word: '정상' or '불량'. Do not write any other explanation or symbol."
                         )
                     },
                     {
@@ -233,7 +227,7 @@ try:
                         "content": [
                             {
                                 "type": "text",
-                                "text": "종이가 찢어지지 않은 온전한 직사각형인지 검사하여 판정하시오."
+                                "text": "Is this a real, clean, undamaged rectangular sheet of paper? Answer 정상 or 불량."
                             },
                             {
                                 "type": "image_url",
@@ -248,19 +242,17 @@ try:
 
             decision = response["choices"][0]["message"]["content"].strip()
 
-            # 판정 결과 분기 및 상태 업데이트
+            # 판정 결과 분기 (화면: 영어 / 콘솔 및 음성: 한국어)
             if "정상" in decision:
-                current_status = "PASS"
-                status_label = "PASS (정상 - 사용 가능)"
+                status_label = "PASS - INTACT RECTANGULAR PAPER"
                 box_color = (0, 255, 0)  # 초록색 박스
-                console_res = "📄 [판정 결과] 정상 (직사각형 온전함 / 사용 가능)"
-                voice_res = "검사 결과, 종이가 온전한 직사각형으로 정상입니다."
+                console_res = "📄 [판정 결과] 정상 (온전한 직사각형 종이 - 사용 가능)"
+                voice_res = "검사 결과, 온전한 직사각형 종이로 정상입니다."
             else:
-                current_status = "FAIL"
-                status_label = "FAIL (찢어짐/불량 - 사용 불가)"
+                status_label = "FAIL - DEFECTIVE / NOT PAPER"
                 box_color = (0, 0, 255)  # 빨간색 박스
-                console_res = "📄 [판정 결과] 불량 (찢어짐 또는 불규칙 형태 / 사용 불가)"
-                voice_res = "검사 결과, 종이가 찢어졌거나 형태가 불량하여 사용 불가합니다."
+                console_res = "📄 [판정 결과] 불량 (찢어짐, 비정형 형태 또는 종이가 아님 - 사용 불가)"
+                voice_res = "검사 결과, 종이가 찢어졌거나 올바른 종이가 아닙니다. 불량입니다."
 
             notify(console_res, voice_res)
 
@@ -268,7 +260,6 @@ finally:
     cap.release()
     cv2.destroyAllWindows()
 
-    # 프로세스 종료 시 메모리/바인딩 안전 해제
     if 'llm' in locals():
         del llm
     if 'chat_handler' in locals():
