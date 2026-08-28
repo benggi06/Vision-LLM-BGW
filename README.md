@@ -1,103 +1,226 @@
-(.venv) bang@bang-desktop:~/vision-llm$ python3 project.py 
+import os
+import subprocess
+import time
+import base64
+import gc
+import cv2
+from llama_cpp import Llama
+from llama_cpp.llama_chat_format import Gemma4ChatHandler
 
-[시스템 준비] VLM 모델을 로드하는 중입니다. 잠시만 기다려주세요...
-llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
-llama_kv_cache: the V embeddings have different sizes across layers and FA is not enabled - padding V cache to 512
-llama_kv_cache: the V embeddings have different sizes across layers and FA is not enabled - padding V cache to 512
-GST_ARGUS: Creating output stream
-CONSUMER: Waiting until producer is connected...
-GST_ARGUS: Available Sensor modes :
-GST_ARGUS: 3280 x 2464 FR = 21.000000 fps Duration = 47619048 ; Analog Gain range min 1.000000, max 10.625000; Exposure Range min 13000, max 683709000;
+# ==================== 1. 경로 및 장치 설정 ====================
+GEMMA_MODEL_PATH = "src/models/Gemma4/google_gemma-4-E2B-it-Q4_K_M.gguf"
+MMPROJ_PATH = "src/models/Gemma4/mmproj-google_gemma-4-E2B-it-f16.gguf"
 
-GST_ARGUS: 3280 x 1848 FR = 28.000001 fps Duration = 35714284 ; Analog Gain range min 1.000000, max 10.625000; Exposure Range min 13000, max 683709000;
+PIPER_PYTHON = ".piper_venv/bin/python"
+PIPER_MODEL = "src/models/Piper/ko_KR-kss-medium.onnx"
+AUDIO_DIR = "src/audio"
+AUDIO_OUTPUT = os.path.join(AUDIO_DIR, "response.wav")
+PRIMARY_SPEAKER = "plughw:2,0"  # 기본 지정 장치
 
-GST_ARGUS: 1920 x 1080 FR = 29.999999 fps Duration = 33333334 ; Analog Gain range min 1.000000, max 10.625000; Exposure Range min 13000, max 683709000;
+os.makedirs(AUDIO_DIR, exist_ok=True)
 
-GST_ARGUS: 1640 x 1232 FR = 29.999999 fps Duration = 33333334 ; Analog Gain range min 1.000000, max 10.625000; Exposure Range min 13000, max 683709000;
+# CSI 카메라 GStreamer 파이프라인
+PIPELINE = (
+    "nvarguscamerasrc sensor-id=0 ! "
+    "video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 ! "
+    "nvvidconv ! "
+    "video/x-raw, format=BGRx ! "
+    "videoconvert ! "
+    "video/x-raw, format=BGR ! "
+    "queue leaky=downstream max-size-buffers=1 ! "
+    "appsink drop=true max-buffers=1 sync=false"
+)
 
-GST_ARGUS: 1280 x 720 FR = 59.999999 fps Duration = 16666667 ; Analog Gain range min 1.000000, max 10.625000; Exposure Range min 13000, max 683709000;
+# ==================== 2. 음성 출력 함수 (안전 폴백 적용) ====================
+def speak_via_piper_venv(text: str):
+    """
+    Piper TTS로 음성 합성 후 aplay로 출력 (장치 오류 시 default로 폴백)
+    """
+    try:
+        # 1) Piper TTS 음성 파일 생성 (.piper_venv)
+        subprocess.run(
+            [
+                PIPER_PYTHON,
+                "-m", "piper",
+                "-m", PIPER_MODEL,
+                "-f", AUDIO_OUTPUT,
+                "--", text,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-GST_ARGUS: Running with following settings:
-   Camera index = 0 
-   Camera mode  = 4 
-   Output Stream W = 1280 H = 720 
-   seconds to Run    = 0 
-   Frame Rate = 59.999999 
-GST_ARGUS: Setup Complete, Starting captures for 0 seconds
-GST_ARGUS: Starting repeat capture requests.
-CONSUMER: Producer has connected; continuing.
-[ WARN:0@8.883] global cap_gstreamer.cpp:1728 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+        # 2) 오디오 재생 시도 (PRIMARY_SPEAKER -> default -> 기본 aplay 순차 시도)
+        played = False
+        for dev in [PRIMARY_SPEAKER, "default", None]:
+            cmd = ["aplay"]
+            if dev is not None:
+                cmd += ["-D", dev]
+            cmd.append(AUDIO_OUTPUT)
 
-========================================
-🔔 [시스템 시작] 종이 상태 검사 시스템을 시작합니다.
-========================================
-[TTS 에러] 음성 출력 중 문제가 발생했습니다: Command '['aplay', '-D', 'plughw:2,0', 'src/audio/response.wav']' returned non-zero exit status 1.
-👉 [안내] 종이를 카메라에 비추고 엔터를 누르세요. (종료는 q 입력 후 엔터)
-[TTS 에러] 음성 출력 중 문제가 발생했습니다: Command '['aplay', '-D', 'plughw:2,0', 'src/audio/response.wav']' returned non-zero exit status 1.
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0:
+                played = True
+                break
 
-[대기 중] Enter: 검사 시작 | q: 종료 > 
+        if not played:
+            print("[오디오 경고] 스피커 재생 실패. 'aplay -l' 명령어로 오디오 장치 번호를 확인하세요.")
 
-🔍 [검사 진행] 종이 상태 검사를 시작합니다. 분석 중입니다...
-[TTS 에러] 음성 출력 중 문제가 발생했습니다: Command '['aplay', '-D', 'plughw:2,0', 'src/audio/response.wav']' returned non-zero exit status 1.
-add_text: <|turn>system
-Instruction:
-주어진 이미지 속 종이의 찢김 및 훼손 여부를 확인하여 사용 가능 여부를 판단하시오.
+    except Exception as e:
+        print(f"[TTS 에러] {e}")
 
-Constraint:
-종이가 온전하고 찢어지지 않았다면 반드시 '사용 가능', 찢어지거나 구멍이 났다면 반드시 '사용 불가'라고만 답하시오.
-다른 단어나 문장은 절대 추가하지 마시오.<turn|>
-<|turn>user
-이 종이의 찢어짐 여부와 사용 가능 여부를 판정해주세요.
-add_text: <|image>
-add_media: preproc_out has 1 entries, grid_x = 0, grid_y = 0, has_overview = 0
-image_tokens->nx = 264
-image_tokens->ny = 1
-batch_f32 size = 1
-add_text: <image|>
-add_text: <turn|>
-<|turn>model
+def notify(console_msg: str, speech_msg: str = None):
+    print(console_msg)
+    speak_text = speech_msg if speech_msg is not None else console_msg
+    speak_via_piper_venv(speak_text)
 
-encoding image slice...
-clip_encode: copying image 1/1 to input buffer (nx=1056, ny=576)
-clip_encode: output embedding shape [1536, 264, 1]
-image slice encoded in 1235 ms
-decoding image batch 1/9, n_tokens_batch = 32
-image decoded (batch 1/9) in 59 ms
-decoding image batch 2/9, n_tokens_batch = 32
-image decoded (batch 2/9) in 75 ms
-decoding image batch 3/9, n_tokens_batch = 32
-image decoded (batch 3/9) in 59 ms
-decoding image batch 4/9, n_tokens_batch = 32
-image decoded (batch 4/9) in 61 ms
-decoding image batch 5/9, n_tokens_batch = 32
-image decoded (batch 5/9) in 83 ms
-decoding image batch 6/9, n_tokens_batch = 32
-image decoded (batch 6/9) in 66 ms
-decoding image batch 7/9, n_tokens_batch = 32
-image decoded (batch 7/9) in 63 ms
-decoding image batch 8/9, n_tokens_batch = 32
-image decoded (batch 8/9) in 62 ms
-decoding image batch 9/9, n_tokens_batch = 8
-image decoded (batch 9/9) in 87 ms
-📄 [판정 결과] 사용 가능 (상태: 온전함)
-[TTS 에러] 음성 출력 중 문제가 발생했습니다: Command '['aplay', '-D', 'plughw:2,0', 'src/audio/response.wav']' returned non-zero exit status 1.
+# ==================== 3. VLM 모델 로드 ====================
+print("\n[시스템 준비] VLM 모델을 로드하는 중입니다. 잠시만 기다려주세요...")
+chat_handler = Gemma4ChatHandler(clip_model_path=MMPROJ_PATH)
+llm = Llama(
+    model_path=GEMMA_MODEL_PATH,
+    chat_handler=chat_handler,
+    n_gpu_layers=-1,
+    n_ctx=2048,
+    n_batch=32,
+    n_ubatch=32,
+    verbose=False,
+)
 
-[대기 중] Enter: 검사 시작 | q: 종료 > q
+# ==================== 4. 메인 실행 루프 (카메라 GUI 창 포함) ====================
+cap = cv2.VideoCapture(PIPELINE, cv2.CAP_GSTREAMER)
 
-🛑 [시스템 종료] 종이 상태 검사 시스템을 종료합니다.
-[TTS 에러] 음성 출력 중 문제가 발생했습니다: Command '['aplay', '-D', 'plughw:2,0', 'src/audio/response.wav']' returned non-zero exit status 1.
-GST_ARGUS: Cleaning up
-CONSUMER: Done Success
-GST_ARGUS: Done Success
-Exception ignored in: <function Llama.__del__ at 0xffff555ac670>
-Traceback (most recent call last):
-  File "/home/bang/vision-llm/.venv/lib/python3.10/site-packages/llama_cpp/llama.py", line 2300, in __del__
-  File "/home/bang/vision-llm/.venv/lib/python3.10/site-packages/llama_cpp/llama.py", line 2297, in close
-  File "/usr/lib/python3.10/contextlib.py", line 584, in close
-  File "/usr/lib/python3.10/contextlib.py", line 576, in __exit__
-  File "/usr/lib/python3.10/contextlib.py", line 561, in __exit__
-  File "/usr/lib/python3.10/contextlib.py", line 449, in _exit_wrapper
-  File "/home/bang/vision-llm/.venv/lib/python3.10/site-packages/llama_cpp/llama_chat_format.py", line 3316, in mtmd_free
-  File "/home/bang/vision-llm/.venv/lib/python3.10/site-packages/llama_cpp/_utils.py", line 53, in __enter__
-ValueError: I/O operation on closed file
+if not cap.isOpened():
+    print("❌ 카메라를 열 수 없습니다. 파이프라인 설정을 확인하세요.")
+    exit(1)
 
+cv2.namedWindow("Paper Inspection Camera View", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Paper Inspection Camera View", 960, 540)
+
+# 시작 안내
+notify(
+    "\n========================================\n"
+    "🔔 [시스템 시작] 종이 상태 검사 시스템을 시작합니다.\n"
+    "========================================",
+    "종이 상태 검사 시스템을 시작합니다."
+)
+
+notify(
+    "👉 [안내] 화면에 종이를 맞추고 [SPACE] 또는 [ENTER] 키를 누르면 검사합니다. (종료는 Q)",
+    "화면을 보며 종이를 맞추고 스페이스바를 눌러주세요."
+)
+
+last_result_text = "Ready (Press SPACE to Inspect)"
+last_color = (255, 255, 0)  # Cyan
+
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("카메라 프레임 수신 대기 중...")
+            time.sleep(0.1)
+            continue
+
+        # 화면 출력용 프레임 복사
+        display_frame = frame.copy()
+
+        # 화면 하단에 조작 가이드 오버레이
+        cv2.putText(display_frame, "Key: [SPACE/ENTER] Inspect | [Q] Quit", (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+        
+        # 이전 검사 결과 상태 표시
+        cv2.putText(display_frame, f"Status: {last_result_text}", (30, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, last_color, 2, cv2.LINE_AA)
+
+        cv2.imshow("Paper Inspection Camera View", display_frame)
+
+        # 키 입력 대기 (1ms)
+        key = cv2.waitKey(1) & 0xFF
+
+        # 종료 (Q 또는 ESC)
+        if key == ord('q') or key == ord('Q') or key == 27:
+            notify(
+                "\n🛑 [시스템 종료] 종이 상태 검사 시스템을 종료합니다.",
+                "시스템을 종료합니다. 이용해 주셔서 감사합니다."
+            )
+            break
+
+        # 검사 실행 (스페이스바: 32, 엔터키: 13)
+        if key == 32 or key == 13:
+            # 1) 화면에 분석 중 표시 업데이트
+            analyzing_frame = frame.copy()
+            cv2.putText(analyzing_frame, "Analyzing Paper Quality...", (30, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2, cv2.LINE_AA)
+            cv2.imshow("Paper Inspection Camera View", analyzing_frame)
+            cv2.waitKey(1)
+
+            # 2) 검사 시작 음성 송출
+            notify(
+                "\n🔍 [검사 진행] 종이 상태를 분석 중입니다...",
+                "종이 상태를 분석 중입니다."
+            )
+
+            # 3) 메모리 상에서 Base64 인코딩
+            _, buffer = cv2.imencode('.jpg', frame)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            image_data = "data:image/jpeg;base64," + image_base64
+
+            # 4) Gemma 4 VLM 판단
+            response = llm.create_chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Instruction:\n"
+                            "주어진 이미지 속 종이의 찢김 및 훼손 여부를 확인하여 사용 가능 여부를 판단하시오.\n\n"
+                            "Constraint:\n"
+                            "종이가 온전하고 찢어지지 않았다면 반드시 '사용 가능', 찢어지거나 구멍이 났다면 반드시 '사용 불가'라고만 답하시오.\n"
+                            "다른 설명은 절대 붙이지 마시오."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "이 종이의 찢어짐 여부와 사용 가능 여부를 판정해주세요."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_data}
+                            },
+                        ]
+                    }
+                ],
+                max_tokens=15,
+                temperature=0.0,
+            )
+
+            decision = response["choices"][0]["message"]["content"].strip()
+
+            # 5) 판정 결과 처리 및 음성 안내
+            if "사용 가능" in decision:
+                console_res = "📄 [판정 결과] 사용 가능 (상태: 온전함)"
+                voice_res = "검사 결과, 종이가 온전하여 사용 가능합니다."
+                last_result_text = "PASS (Usable)"
+                last_color = (0, 255, 0)  # Green
+            else:
+                console_res = "📄 [판정 결과] 사용 불가 (상태: 찢어짐/훼손)"
+                voice_res = "검사 결과, 종이가 찢어져 있어 사용 불가능합니다."
+                last_result_text = "FAIL (Torn / Defective)"
+                last_color = (0, 0, 255)  # Red
+
+            notify(console_res, voice_res)
+
+finally:
+    # 안전 리소스 해제 루틴
+    cap.release()
+    cv2.destroyAllWindows()
+    
+    # Llama 객체 사전 정리로 종료 예외 차단
+    if 'llm' in locals():
+        del llm
+    if 'chat_handler' in locals():
+        del chat_handler
+    gc.collect()
